@@ -46,12 +46,13 @@ jobs:
       - name: Samsung firmware server lookups (models from the stock list)
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Continue'   # samloader writes notes to stderr; judge by exit code
           $sl = Join-Path $env:LOCALAPPDATA 'GalaxyRefurb\tools\samloader\samloader.exe'
           $ok = 0
           foreach ($m in @('SM-S921B','SM-S928B','SM-S936B','SM-A155F','SM-A356B','SM-S711B','SM-F956B')) {
             foreach ($r in @('BTU','EUX')) {
-              $v = & $sl check-update -m $m -r $r 2>&1
-              Write-Host "$m $r -> $v"
+              $v = (& $sl check-update -m $m -r $r 2>&1 | Out-String).Trim()
+              Write-Host "$m $r -> [$LASTEXITCODE] $v"
               if ($LASTEXITCODE -eq 0) { $ok++ }
             }
           }
