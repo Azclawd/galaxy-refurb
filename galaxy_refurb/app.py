@@ -172,12 +172,12 @@ def get_firmware(cfg: Config, r: TriageResult) -> dict[str, Path] | None:
     tried_download = False
     while True:
         source = firmware.find_local_firmware(cfg.firmware_dir, r.model, r.region)
-        if not source and r.region and cfg.samloader and not tried_download:
+        if not source and cfg.samloader and not tried_download:
             tried_download = True
-            ui.info(f"Downloading official firmware for {r.model} (region {r.region}) from Samsung. "
+            ui.info(f"Downloading official firmware for {r.model} (region {r.region or '?'}) from Samsung. "
                     "5-12 GB - can take a while. It's saved, so the next phone of this model is instant.")
             source = firmware.download_firmware(cfg.samloader, cfg.settings, cfg.firmware_dir, r.model, r.region,
-                                                echo=ui.warn)
+                                                echo=ui.info)
             if not source:
                 ui.warn("Automatic download didn't work (wrong region code for this model, or Samsung's "
                         "server refused). You can add the firmware by hand instead.")

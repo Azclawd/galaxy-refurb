@@ -65,7 +65,7 @@ Every phone gets a row in **Documents\GalaxyRefurb\inventory.csv**, which opens 
 
 ## Good to know
 
-- **Region code (CSC).** Firmware is downloaded for the phone's own region (read automatically, e.g. `BTU` = UK, `EUX` = Europe). If a download fails for a demo unit, try `BTU` or `EUX` when asked.
+- **Region code (CSC).** The tool reads the phone's region (e.g. `BTU` = UK). Samsung publishes most UK/EU phones' firmware under the European package `EUX`, which already contains `BTU`, so the tool tries the phone's own region first and then falls back to `EUX`, then `EUY`. The phone keeps its UK settings.
 - **Demo units (LDU).** Many convert to normal phones with retail firmware. Some keep demo restrictions in hardware (no IMEI, no SIM). The final check catches this. Don't sell those as working phones.
 - **Knox warranty bit.** If it's tripped, the phone works but Samsung Pay / Secure Folder won't. The tool flags it so you can mention it in the listing.
 - **Disk space.** Allow about 25 GB per phone model (the zip plus an unpacked copy, kept so the next phone of the same model is instant). Delete folders in `Documents\GalaxyRefurb\firmware` when you've finished a model.

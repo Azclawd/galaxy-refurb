@@ -66,8 +66,9 @@ def find_local_firmware(firmware_dir: Path, model: str, region: str = "") -> Pat
         candidates += _candidates_in(model_dir / region.upper())
     if model_dir.is_dir():
         candidates += _candidates_in(model_dir)
-        if not region:
-            for sub in sorted(p for p in model_dir.iterdir() if p.is_dir()):
+        # Other region folders, e.g. EUX firmware for a phone that reports BTU (EUX includes BTU).
+        for sub in sorted(p for p in model_dir.iterdir() if p.is_dir() and not p.name.endswith(".unpacked")):
+            if sub.name != region.upper():
                 candidates += _candidates_in(sub)
     for p in sorted(firmware_dir.iterdir()):
         if p == model_dir or sm not in p.name.upper():
@@ -83,14 +84,53 @@ def download_command(samloader: str, model: str, region: str, out_dir: Path, thr
     return [samloader, "download", "-m", model.upper(), "-r", region.upper(), "-d", str(out_dir), "-j", str(threads)]
 
 
+# Samsung's servers often only serve the multi-region package: a UK phone reports BTU but its
+# firmware is published under EUX (which contains BTU). Verified against Samsung's servers in CI.
+FALLBACK_REGIONS = ("EUX", "EUY")
+
+
+def regions_to_try(region: str) -> list[str]:
+    out: list[str] = []
+    for r in (region.strip().upper(), *FALLBACK_REGIONS):
+        if r and r not in out:
+            out.append(r)
+    return out
+
+
+def check_update(samloader: str, model: str, region: str) -> str | None:
+    """Latest firmware version string for model/region, or None if Samsung has none."""
+    cmd = [samloader, "check-update", "-m", model.upper(), "-r", region.upper()]
+    log("$ " + " ".join(cmd))
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log(f"check-update failed: {exc!r}")
+        return None
+    log(f"exit {proc.returncode} {proc.stdout.strip()} {proc.stderr.strip()[-300:]}")
+    out = proc.stdout.strip()
+    return out.splitlines()[-1].strip() if proc.returncode == 0 and out else None
+
+
 def download_firmware(samloader: str | None, settings: dict, firmware_dir: Path, model: str, region: str,
                       echo=print) -> Path | None:
     """Download the latest official firmware. Returns the zip path, or None on failure."""
-    if not samloader or not settings.get("firmware_download_enabled", True) or not model or not region:
+    if not samloader or not settings.get("firmware_download_enabled", True) or not model:
         return None
-    out_dir = firmware_dir / model.upper() / region.upper()
+    chosen = None
+    for r in regions_to_try(region):
+        version = check_update(samloader, model, r)
+        if version:
+            chosen = r
+            if r != region.upper():
+                echo(f"Samsung publishes this model's firmware under region {r} (includes {region or 'your region'}) - using that.")
+            echo(f"Latest firmware: {version}")
+            break
+    if not chosen:
+        echo(f"Samsung's servers have no firmware for {model} in regions {', '.join(regions_to_try(region))}.")
+        return None
+    out_dir = firmware_dir / model.upper() / chosen
     out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = download_command(samloader, model, region, out_dir, int(settings.get("download_threads", 8)))
+    cmd = download_command(samloader, model, chosen, out_dir, int(settings.get("download_threads", 8)))
     log("$ " + " ".join(cmd))
     try:
         # Progress bar goes straight to the console so you can watch it.

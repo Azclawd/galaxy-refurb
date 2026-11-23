@@ -258,6 +258,18 @@ def test_inventory_upsert(tmp_path):
     assert rows[0]["final_result"] == "PASS_READY_TO_SELL"
 
 
+def test_regions_to_try():
+    assert firmware.regions_to_try("btu") == ["BTU", "EUX", "EUY"]
+    assert firmware.regions_to_try("EUX") == ["EUX", "EUY"]
+    assert firmware.regions_to_try("") == ["EUX", "EUY"]
+
+
+def test_btu_phone_finds_eux_download(tmp_path):
+    fw = tmp_path / "fw"
+    eux = _make_firmware_zip(tmp_path, "SM-S921B_2_eux_fac.zip", fw / "SM-S921B" / "EUX")
+    assert firmware.find_local_firmware(fw, "SM-S921B", "BTU") == eux
+
+
 def test_manual_triage_note_survives_redecide():
     r = triage.TriageResult(model="SM-A156B", region="BTU", manual=True)
     triage.decide(r)
