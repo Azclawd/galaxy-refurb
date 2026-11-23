@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "galaxy-refurb"
+version = "0.1.0"
+description = "Triage, flash and check ex-store Samsung Galaxy phones so they can be resold."
+requires-python = ">=3.10"
+dependencies = ["rich>=13"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+galaxy-refurb = "galaxy_refurb.app:main"
+
+[tool.setuptools]
+packages = ["galaxy_refurb"]

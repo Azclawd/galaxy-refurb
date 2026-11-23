@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pytest -q
+
+  windows-installer:
+    # Runs the exact one-line install a user would run, on a clean Windows machine.
+    needs: unit
+    runs-on: windows-latest
+    env:
+      GALAXY_REFURB_NO_START: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run installer
+        shell: powershell
+        run: |
+          irm "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.ps1" | iex
+      - name: Check installed pieces
+        shell: powershell
+        run: |
+          $h = Join-Path $env:LOCALAPPDATA 'GalaxyRefurb'
+          & "$h\python\python.exe" -m galaxy_refurb --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$h\tools\platform-tools\adb.exe" version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          & "$h\tools\samloader\samloader.exe" --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (-not (Test-Path "$h\GalaxyRefurb.cmd")) { exit 1 }
+          if (-not (Test-Path ([Environment]::GetFolderPath('Desktop') + '\Galaxy Refurb.lnk'))) { exit 1 }
+      - name: Samsung firmware server lookups (models from the stock list)
+        shell: powershell
+        run: |
+          $sl = Join-Path $env:LOCALAPPDATA 'GalaxyRefurb\tools\samloader\samloader.exe'
+          $ok = 0
+          foreach ($m in @('SM-S921B','SM-S928B','SM-S936B','SM-A155F','SM-A356B','SM-S711B','SM-F956B')) {
+            foreach ($r in @('BTU','EUX')) {
+              $v = & $sl check-update -m $m -r $r 2>&1
+              Write-Host "$m $r -> $v"
+              if ($LASTEXITCODE -eq 0) { $ok++ }
+            }
+          }
+          Write-Host "$ok lookups succeeded"
+          if ($ok -eq 0) { exit 1 }
