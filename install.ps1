@@ -89,7 +89,7 @@ function Install-GalaxyRefurb {
         # 6. Launcher + shortcuts
         Say 'Shortcuts'
         $launcher = Join-Path $AppHome 'GalaxyRefurb.cmd'
-        $cmd = "@echo off`r`ntitle Galaxy Refurb`r`n`"%~dp0python\python.exe`" -m galaxy_refurb %*`r`necho.`r`npause`r`n"
+        $cmd = "@echo off`r`ntitle Galaxy Refurb (keep open while working)`r`n`"%~dp0python\python.exe`" -m galaxy_refurb %*`r`nif errorlevel 1 pause`r`n"
         [IO.File]::WriteAllText($launcher, $cmd, [Text.Encoding]::ASCII)
         $ws = New-Object -ComObject WScript.Shell
         $places = @([Environment]::GetFolderPath('Desktop'), (Join-Path ([Environment]::GetFolderPath('Programs')) ''))
@@ -99,6 +99,7 @@ function Install-GalaxyRefurb {
             $sc.TargetPath = $launcher
             $sc.WorkingDirectory = $AppHome
             $sc.IconLocation = "$env:SystemRoot\System32\shell32.dll,41"
+            $sc.WindowStyle = 7   # start the helper console minimised; the app opens in its own window
             $sc.Save()
         }
         Good "Desktop + Start menu shortcut: 'Galaxy Refurb'"

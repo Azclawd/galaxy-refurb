@@ -39,17 +39,18 @@ What gets installed:
 
 ## Doing a phone
 
-Double-click **Galaxy Refurb** and choose **1. Process a phone**, then follow the prompts on screen. For a typical phone:
+Double-click **Galaxy Refurb**. The app opens in its own window.
 
-1. **Turn on USB debugging** on the phone (the tool shows the steps), plug it in and tap **Allow**.
-   - If a store phone won't let you do this, type **M** when asked. The tool reads the model from the phone's Download mode instead.
-2. **Type the IMEI** (dial `*#06#`) and check it on CheckMEND, which the tool opens for you.
-3. If Google or Samsung accounts are signed in, **remove them** when told. Otherwise the phone will lock after the reset.
-4. **Confirm the wipe.** The firmware downloads (5-12 GB the first time for each model, then it's reused) and flashes automatically. Don't unplug the phone.
-5. **Set up the phone** without signing in to anything, turn USB debugging back on, and answer a few yes/no checks.
-6. On a **PASS**, do the final Factory data reset the tool shows you. The phone is then ready to box.
+1. **Plug in a phone.** The phone on screen flips upright and starts glowing once it's connected, and shows the model.
+2. **Press Start.** The 10 steps animate in and tick off one by one:
+   Connect → Read details → IMEI & blacklist → Accounts & locks → Firmware → Install & wipe → First start-up → Reconnect → Final checks → Fresh reset.
+3. **When it needs you,** a card pops up in the bottom right and the phone glows amber. Examples are "Tap Allow on the phone" or "Remove the signed-in accounts". Where it can, the app moves on by itself as soon as it sees you've done it.
+4. **If something fails,** a red card explains **what went wrong, why, and what to do**, with the matching log lines, plus Retry / Use Odin / Stop buttons.
+5. At the end you see **Ready to sell** (green) or **Return to seller** (amber), with the reason. Press **Next phone**.
 
-Every phone gets a row in **Documents\GalaxyRefurb\inventory.csv**, which opens in Excel. Menu option 4 opens it.
+If a store phone won't let you turn on USB debugging, choose **"Phone won't allow it - use Download mode"** on the first card.
+
+The **History** tab lists every phone with counts of Ready / Return / Needs attention. **Open in Excel** opens `Documents\GalaxyRefurb\inventory.csv`.
 
 ### Results you'll see
 

@@ -276,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     if "--version" in argv:
         print(__version__)
         return 0
+    if "--console" not in argv:
+        from . import gui
+        return gui.main()
     cfg = load_config()
     ui.step(f"Galaxy Refurb v{__version__}  -  data folder: {cfg.data_home}")
     adb = check_tools(cfg)

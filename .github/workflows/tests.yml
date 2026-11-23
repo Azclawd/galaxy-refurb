@@ -43,6 +43,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           if (-not (Test-Path "$h\GalaxyRefurb.cmd")) { exit 1 }
           if (-not (Test-Path ([Environment]::GetFolderPath('Desktop') + '\Galaxy Refurb.lnk'))) { exit 1 }
+      - name: App window server starts and answers (real Windows)
+        shell: powershell
+        run: |
+          $env:GALAXY_REFURB_NO_WINDOW = '1'; $env:GALAXY_REFURB_STAY = '1'; $env:GALAXY_REFURB_PORT = '8799'
+          $py = Join-Path $env:LOCALAPPDATA 'GalaxyRefurb\python\python.exe'
+          $p = Start-Process -FilePath $py -ArgumentList '-m','galaxy_refurb' -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 8
+          $ping = Invoke-RestMethod http://127.0.0.1:8799/api/ping
+          Write-Host "ping: $($ping | ConvertTo-Json -Compress)"
+          $state = Invoke-RestMethod "http://127.0.0.1:8799/api/state?v=-1"
+          Write-Host "device: $($state.device | ConvertTo-Json -Compress)"
+          Write-Host "tools: $($state.tools | ConvertTo-Json -Compress)"
+          $page = Invoke-WebRequest http://127.0.0.1:8799/ -UseBasicParsing
+          Stop-Process -Id $p.Id -Force
+          if ($ping.app -ne 'galaxy-refurb') { exit 1 }
+          if ($state.device.state -ne 'none') { exit 1 }
+          if (-not $state.tools.adb -or -not $state.tools.samloader) { exit 1 }
+          if ($page.Content -notmatch 'Plug in a phone') { exit 1 }
       - name: Samsung firmware server lookups (models from the stock list)
         shell: powershell
         run: |
