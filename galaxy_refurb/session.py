@@ -68,16 +68,19 @@ class Session:
             self._bump()
 
     # ------------------------------------------------------------------ job + steps
-    def new_job(self, steps: list[tuple[str, str]]) -> None:
+    def new_job(self, steps: list[tuple[str, str]], mode: str = "full") -> None:
         with self._cond:
             self.cancel_requested = False
             self.logs.clear()
             self.job = {
                 "running": True,
+                "mode": mode,
                 "started": time.time(),
+                "ended": None,
                 "phone": {},
                 "result": None,
-                "steps": [{"key": k, "title": t, "status": "pending", "detail": "", "checks": []} for k, t in steps],
+                "steps": [{"key": k, "title": t, "status": "pending", "detail": "", "checks": [],
+                           "t0": None, "dur": None} for k, t in steps],
             }
             self._bump()
 
@@ -91,7 +94,11 @@ class Session:
     def set_step(self, key: str, status: str | None = None, detail: str | None = None) -> None:
         with self._cond:
             s = self._step(key)
-            if status is not None:
+            if status is not None and status != s["status"]:
+                if status == "running" and s["t0"] is None:
+                    s["t0"] = time.time()
+                elif status != "running" and s["t0"] is not None and s["dur"] is None:
+                    s["dur"] = round(time.time() - s["t0"])
                 s["status"] = status
             if detail is not None:
                 s["detail"] = detail
@@ -113,6 +120,7 @@ class Session:
         with self._cond:
             if self.job is not None:
                 self.job["running"] = False
+                self.job["ended"] = time.time()
                 self.job["result"] = {"status": status, "title": title, "detail": detail,
                                       "diagnosis": diagnosis.to_dict() if diagnosis else None}
             self.prompt = None

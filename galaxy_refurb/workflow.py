@@ -6,6 +6,8 @@ wherever possible, moves on by itself as soon as it sees the phone has done it.
 from __future__ import annotations
 
 import re
+import shutil
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -32,6 +34,15 @@ STEPS = [
     ("reset", "Fresh reset for the buyer"),
 ]
 
+VERIFY_STEPS = [
+    ("connect", "Connect phone"),
+    ("read", "Read phone details"),
+    ("verify", "Final checks"),
+    ("reset", "Fresh reset for the buyer"),
+]
+
+MIN_FREE_GB = 25  # zip + unpacked copy of the biggest firmware
+
 IMEI_CHECK_URL = "https://www.checkmend.com/uk/"
 
 USB_DEBUG_STEPS = [
@@ -51,6 +62,52 @@ class Stop(Exception):
         self.status, self.title, self.diagnosis, self.detail = status, title, diagnosis, detail
 
 
+def fmt_clock(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+class Ticker:
+    """Keeps a running step's detail line alive: '<text> · 03:12', refreshed every second.
+
+    `extra()` may return live numbers (e.g. bytes downloaded) to append.
+    """
+
+    def __init__(self, session: Session, key: str, text: str, extra=None):
+        self.s, self.key, self.text, self.extra = session, key, text, extra
+        self.t0 = time.time()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(2)
+
+    def set(self, text: str) -> None:
+        self.text = text
+        self._push()
+
+    def _push(self) -> None:
+        parts = [self.text]
+        if self.extra:
+            try:
+                e = self.extra()
+            except Exception:
+                e = ""
+            if e:
+                parts.append(e)
+        parts.append(fmt_clock(time.time() - self.t0))
+        self.s.set_step(self.key, None, " · ".join(parts))
+
+    def _run(self) -> None:
+        while not self._stop.wait(1.0):
+            self._push()
+
+
 def parse_service_call_imei(text: str) -> str:
     """Extract an IMEI from `service call iphonesubinfo` parcel output ('3.5.8.…' text columns)."""
     chunks = re.findall(r"'([^']*)'", text)
@@ -60,8 +117,8 @@ def parse_service_call_imei(text: str) -> str:
 
 
 class Workflow:
-    def __init__(self, cfg: Config, session: Session, adb: Adb | None):
-        self.cfg, self.s, self.adb = cfg, session, adb
+    def __init__(self, cfg: Config, session: Session, adb: Adb | None, mode: str = "full"):
+        self.cfg, self.s, self.adb, self.mode = cfg, session, adb, mode
         self.r = TriageResult()
         self.serial: str | None = None
         self.notes: list[str] = []
@@ -115,14 +172,16 @@ class Workflow:
 
     # ------------------------------------------------------------------ run
     def run(self) -> None:
-        self.s.new_job(STEPS)
+        steps = VERIFY_STEPS if self.mode == "verify" else STEPS
+        self.s.new_job(steps, mode=self.mode)
         start_log(self.cfg.logs_dir, "phone")
         current = "connect"
+        fns = {"connect": self.connect, "read": self.read, "imei": self.imei, "locks": self.locks,
+               "firmware": self.get_firmware, "flash": self.do_flash, "setup": self.setup,
+               "reconnect": self.reconnect, "verify": self.verify, "reset": self.reset}
         try:
-            for key, fn in (("connect", self.connect), ("read", self.read), ("imei", self.imei),
-                            ("locks", self.locks), ("firmware", self.get_firmware), ("flash", self.do_flash),
-                            ("setup", self.setup), ("reconnect", self.reconnect), ("verify", self.verify),
-                            ("reset", self.reset)):
+            for key, _title in steps:
+                fn = fns[key]
                 current = key
                 self.s.check_cancel()
                 self.step(key, "running")
@@ -157,7 +216,7 @@ class Workflow:
             self.serial = serial
             self.step("connect", "done", "Connected over USB")
             return
-        if self.download_mode():
+        if self.mode != "verify" and self.download_mode():
             self.r.manual = True
             self.step("connect", "done", "Phone is in Download mode")
             return
@@ -168,7 +227,8 @@ class Workflow:
             text=("A message on the phone asks to allow USB debugging." if unauthorized else
                   "This lets the PC read the phone. One-time per phone - takes about 30 seconds."),
             steps=(["Tick 'Always allow from this computer'.", "Tap Allow."] if unauthorized else USB_DEBUG_STEPS),
-            options=[{"value": "download", "label": "Phone won't allow it - use Download mode", "style": "ghost"}],
+            options=([] if self.mode == "verify" else
+                     [{"value": "download", "label": "Phone won't allow it - use Download mode", "style": "ghost"}]),
             waiting="Watching for the phone… this moves on by itself.")
         if how == "auto":
             self.serial = val
@@ -196,6 +256,11 @@ class Workflow:
         if not self.r.serial:
             self.r.serial = self.serial or "manual-" + time.strftime("%Y%m%d-%H%M%S")
         start_log(self.cfg.logs_dir, self.r.serial)
+        if self.mode == "verify":
+            row = next((x for x in inventory.load(self.cfg.inventory_csv) if x.get("serial") == self.r.serial), None)
+            if row:
+                self.r.imei, self.r.imei_check = row.get("imei", ""), row.get("imei_check", "") or "not checked"
+                self.r.model = self.r.model or row.get("model", "")
         self.s.set_phone(model=self.r.model, serial=self.r.serial, region=self.r.region or "?",
                          firmware=self.r.firmware, android=self.r.android)
         self.step("read", "done", f"{self.r.model} · region {self.r.region or '?'}")
@@ -286,13 +351,17 @@ class Workflow:
             if not source:
                 source = self.download()
             if source:
-                self.step("firmware", "running", "Unpacking (first time per model only)…")
-                folder = firmware.firmware_folder(source, self.cfg.work_dir)
+                prog = {"pct": 0}
+                with Ticker(self.s, "firmware", "Unpacking firmware (first time per model only)",
+                            extra=lambda: f"{prog['pct']}%" if prog["pct"] else "") as tk:
+                    folder = firmware.firmware_folder(
+                        source, self.cfg.work_dir, progress=lambda d, t: prog.__setitem__("pct", int(d * 100 / t)))
                 tars = firmware.find_tars(folder)
                 missing = [c for c in firmware.COMPONENTS if c not in tars]
                 if not missing:
                     self.tars = tars
-                    ver = tars["AP"].name.split("_")[1] if "_" in tars["AP"].name else source.name
+                    ap = re.sub(r"\.tar(\.md5)?$", "", tars["AP"].name, flags=re.I)
+                    ver = ap.split("_")[1] if "_" in ap else source.name
                     self.step("firmware", "done", f"Official firmware {ver}")
                     return tars
                 self.log(f"Firmware incomplete, missing {missing}", "error")
@@ -332,28 +401,42 @@ class Workflow:
         for region in firmware.regions_to_try(r.region):
             version = firmware.check_update(self.cfg.samloader, r.model, region)
             if version:
-                chosen = region
+                chosen, self.fw_version = region, version
                 self.log(f"Samsung has {version} for {r.model} / {region}")
                 break
             self.log(f"No firmware for {r.model} / {region}")
         if not chosen:
             self.last_diag = diagnose.known("FIRMWARE_NOT_FOUND")
             return None
+        version = self.fw_version
         out_dir = self.cfg.firmware_dir / r.model.upper() / chosen
         out_dir.mkdir(parents=True, exist_ok=True)
-        started = time.time()
+        free_gb = shutil.disk_usage(out_dir).free / 1024 ** 3
+        if free_gb < MIN_FREE_GB:
+            self.last_diag = diagnose.Diagnosis(
+                "DISK_FULL", "Not enough disk space",
+                f"Only {free_gb:.0f} GB free. Firmware needs about {MIN_FREE_GB} GB (download + unpacked copy).",
+                ["Free up space, or delete old model folders in Documents\\GalaxyRefurb\\firmware "
+                 "(Firmware folder button, top right).", "Then press Retry."])
+            return None
+        self.s.add_check("firmware", f"Found on Samsung's servers ({chosen})", "done", version)
+        start_bytes = firmware.folder_bytes(out_dir)
+        rate = {"t": time.time(), "b": start_bytes, "speed": 0.0}
 
-        def on_line(text: str) -> None:
-            pct = re.search(r"(\d+(?:\.\d+)?)\s*(GiB|MiB|GB|MB)\s*/\s*(\d+(?:\.\d+)?)\s*(GiB|MiB|GB|MB)", text)
-            if pct:
-                self.step("firmware", "running", f"Downloading {pct.group(1)} {pct.group(2)} of {pct.group(3)} {pct.group(4)}")
-            else:
-                self.step("firmware", "running", f"Downloading ({int(time.time() - started)}s) – {text[:80]}")
+        def progress() -> str:
+            now_b = firmware.folder_bytes(out_dir)
+            dt = time.time() - rate["t"]
+            if dt >= 2:
+                rate["speed"] = max(0.0, (now_b - rate["b"]) / dt)
+                rate["t"], rate["b"] = time.time(), now_b
+            got = firmware.human_size(max(0, now_b - start_bytes))
+            return f"{got}" + (f" at {firmware.human_size(rate['speed'])}/s" if rate["speed"] else "")
 
         cmd = firmware.download_command(self.cfg.samloader, r.model, chosen, out_dir,
                                         int(self.cfg.settings.get("download_threads", 8)))
-        self.step("firmware", "running", f"Downloading firmware for {r.model} ({chosen}) – 5-12 GB, first time only")
-        code, tail = run_stream(cmd, on_line, timeout=8 * 3600)
+        with Ticker(self.s, "firmware", f"Downloading {r.model} firmware (5-12 GB, first time only)",
+                    extra=progress):
+            code, tail = run_stream(cmd, None, timeout=8 * 3600)
         if code != 0:
             self.last_diag = diagnose.diagnose_download(tail)
             return None
@@ -416,18 +499,15 @@ class Workflow:
         if info.model and self.r.model and info.model.upper() != self.r.model.upper():
             raise Stop("fail", "Firmware doesn't match this phone", diagnose.known(
                 "WRONG_MODEL", [f"Phone reports {info.model}, firmware is for {self.r.model}"]))
-        self.step("flash", "running", "Installing… don't unplug (5-10 minutes)")
-        part = {"n": 0}
+        with Ticker(self.s, "flash", "Installing - don't unplug (usually 5-10 min)") as tk:
+            def on_line(text: str) -> None:
+                m = re.search(r"(\d{1,3})\s*%", text)
+                if m:
+                    tk.set(f"Installing {m.group(1)}% - don't unplug")
+                elif re.search(r"upload|flash|writ|send|partition|erase|reboot", text, re.I):
+                    tk.set(f"{text[:60]} - don't unplug")
 
-        def on_line(text: str) -> None:
-            m = re.search(r"(\d{1,3})\s*%", text)
-            if m:
-                self.step("flash", "running", f"Installing… {m.group(1)}%  ·  don't unplug")
-            elif re.search(r"upload|flash|writ|sending", text, re.I):
-                part["n"] += 1
-                self.step("flash", "running", f"Installing… {text[:70]}")
-
-        code, tail = run_stream(flash.flash_command(self.cfg.samloader, tars), on_line)  # type: ignore[arg-type]
+            code, tail = run_stream(flash.flash_command(self.cfg.samloader, tars), on_line)  # type: ignore[arg-type]
         if code == 0:
             return True, None  # type: ignore[return-value]
         return False, diagnose.diagnose_flash(tail)

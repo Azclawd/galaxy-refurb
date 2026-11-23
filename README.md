@@ -48,6 +48,10 @@ Double-click **Galaxy Refurb**. The app opens in its own window.
 4. **If something fails,** a red card explains **what went wrong, why, and what to do**, with the matching log lines, plus Retry / Use Odin / Stop buttons.
 5. At the end you see **Ready to sell** (green) or **Return to seller** (amber), with the reason. Press **Next phone**.
 
+While it works you'll see live progress: download speed and size, unzip percentage, which partition is being installed, and a running clock on every step. When a card needs you, there's a soft chime and the window title changes to "● Your turn" (toggle with the bell, top right), so you can leave it running and come back. When a phone is finished, **just unplug it and plug in the next** - the app starts fresh by itself.
+
+**Already flashed a phone and closed the app?** Plug it in (USB debugging on) and choose **"Already flashed? Run final checks only"** under the Start button.
+
 If a store phone won't let you turn on USB debugging, choose **"Phone won't allow it - use Download mode"** on the first card.
 
 The **History** tab lists every phone with counts of Ready / Return / Needs attention. **Open in Excel** opens `Documents\GalaxyRefurb\inventory.csv`.

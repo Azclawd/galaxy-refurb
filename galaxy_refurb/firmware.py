@@ -28,6 +28,25 @@ def short_model(model: str) -> str:
     return re.sub(r"^SM-", "", model.strip().upper())
 
 
+def human_size(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}" if unit in ("GB", "MB") else f"{n:.0f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def folder_bytes(folder: Path) -> int:
+    total = 0
+    for p in folder.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
 def find_tars(folder: Path, recursive: bool = True) -> dict[str, Path]:
     """Map BL/AP/CP/CSC to their .tar(.md5) files in folder. HOME_CSC is ignored."""
     found: dict[str, Path] = {}
@@ -146,17 +165,42 @@ def download_firmware(samloader: str | None, settings: dict, firmware_dir: Path,
     return zips[0] if zips else None
 
 
-def unpack_zip(zip_path: Path, dest: Path) -> Path:
-    """Extract a firmware zip into dest (cleared first). Returns dest."""
+def unpack_zip(zip_path: Path, dest: Path, progress=None) -> Path:
+    """Extract a firmware zip into dest (cleared first). progress(done_bytes, total_bytes). Returns dest."""
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
+    tmp = dest.with_name(dest.name + ".partial")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
     with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(dest)
+        members = zf.infolist()
+        total = sum(m.file_size for m in members) or 1
+        done = 0
+        for m in members:
+            target = (tmp / m.filename).resolve()
+            if tmp.resolve() not in target.parents and target != tmp.resolve():
+                continue  # never write outside the folder
+            if m.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(m) as fin, target.open("wb") as fout:
+                while True:
+                    chunk = fin.read(8 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    fout.write(chunk)
+                    done += len(chunk)
+                    if progress:
+                        progress(done, total)
+    shutil.rmtree(dest)
+    tmp.rename(dest)   # only a complete unzip becomes the cache
     return dest
 
 
-def firmware_folder(source: Path, work_dir: Path) -> Path:
+def firmware_folder(source: Path, work_dir: Path, progress=None) -> Path:
     """Return a folder containing the .tar.md5 files, unpacking a zip if needed.
 
     Unpacked folders are cached next to the zip (<zip>.unpacked) so the next phone of the
@@ -167,4 +211,4 @@ def firmware_folder(source: Path, work_dir: Path) -> Path:
     cache = source.with_name(source.stem + ".unpacked")
     if cache.is_dir() and set(COMPONENTS) <= set(find_tars(cache)):
         return cache
-    return unpack_zip(source, cache)
+    return unpack_zip(source, cache, progress)

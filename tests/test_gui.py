@@ -131,11 +131,14 @@ class FakeAdb:
         self.connected = False
 
 
-def run_job(tmp_path, monkeypatch, answers: dict[str, str], flash_ok: bool = True):
+def run_job(tmp_path, monkeypatch, answers: dict[str, str], flash_ok: bool = True, mode: str = "full",
+            flashed: bool = False, with_firmware: bool = True):
     adb = FakeAdb()
+    adb.flashed = flashed
     cfg = Config(app_home=tmp_path / "home", data_home=tmp_path / "data")
     cfg.ensure_dirs()
-    _make_firmware_zip(tmp_path, "SM-S921B_2_x_fac.zip", cfg.firmware_dir / "SM-S921B" / "EUX")
+    if with_firmware:
+        _make_firmware_zip(tmp_path, "SM-S921B_2_x_fac.zip", cfg.firmware_dir / "SM-S921B" / "EUX")
     (cfg.tools_dir / "samloader").mkdir(parents=True)
     (cfg.tools_dir / "samloader" / "samloader").write_text("")  # presence only; calls are faked
 
@@ -172,12 +175,12 @@ def run_job(tmp_path, monkeypatch, answers: dict[str, str], flash_ok: bool = Tru
 
     t = threading.Thread(target=answerer, daemon=True)
     t.start()
-    workflow.Workflow(cfg, s, adb).run()  # type: ignore[arg-type]
+    workflow.Workflow(cfg, s, adb, mode=mode).run()  # type: ignore[arg-type]
     t.join(2)
     return s.snapshot()["job"], seen, cfg
 
 
-ANSWERS = {"IMEI clean": "clean", "Erase": "go", "Set up": "ok", "SIM": "ok", "hardware": "ok", "reset": "done",
+ANSWERS = {"disk space": "stop", "IMEI clean": "clean", "Erase": "go", "Set up": "ok", "SIM": "ok", "hardware": "ok", "reset": "done",
            "Problem": "stop", "USB": "stop", "connection": "stop"}
 
 
@@ -203,3 +206,69 @@ def test_flash_failure_shows_diagnosis(tmp_path, monkeypatch):
     assert job["result"]["status"] == "fail"
     assert job["result"]["diagnosis"]["code"] == "USB_CONNECTION"
     assert next(st for st in job["steps"] if st["key"] == "flash")["status"] == "failed"
+
+
+def test_verify_only_mode(tmp_path, monkeypatch):
+    job, seen, _ = run_job(tmp_path, monkeypatch, ANSWERS, mode="verify", flashed=True)
+    assert job["mode"] == "verify"
+    assert [st["key"] for st in job["steps"]] == ["connect", "read", "verify", "reset"]
+    assert job["result"]["status"] == "pass", job["result"]
+    assert not any("Erase" in t for t in seen)
+
+
+def test_disk_full_stops_before_download(tmp_path, monkeypatch):
+    import collections
+    monkeypatch.setattr(workflow.firmware, "check_update", lambda *a: "S921BXXU1/S921BOXM1/S921BXXU1/S921BXXU1")
+    monkeypatch.setattr(workflow.shutil, "disk_usage", lambda p: collections.namedtuple("u", "total used free")(1, 1, 3 * 1024 ** 3))
+    job, _, _ = run_job(tmp_path, monkeypatch, ANSWERS, with_firmware=False)
+    assert job["result"]["status"] == "fail"
+    assert job["result"]["diagnosis"]["code"] == "DISK_FULL"
+
+
+def test_step_durations_recorded(tmp_path, monkeypatch):
+    job, _, _ = run_job(tmp_path, monkeypatch, ANSWERS)
+    assert all(st["dur"] is not None for st in job["steps"])
+    assert job["ended"] >= job["started"]
+
+
+def test_unzip_progress_and_atomic_cache(tmp_path):
+    from galaxy_refurb import firmware
+    z = _make_firmware_zip(tmp_path)
+    seen = []
+    folder = firmware.firmware_folder(z, tmp_path / "w", progress=lambda d, t: seen.append(d * 100 // t))
+    assert seen and seen[-1] == 100
+    assert not folder.with_name(folder.name + ".partial").exists()
+    assert set(firmware.find_tars(folder)) == {"BL", "AP", "CP", "CSC"}
+
+
+def test_ticker_updates_detail():
+    s = Session("t", "d")
+    s.new_job([("x", "X")])
+    with workflow.Ticker(s, "x", "Working", extra=lambda: "1.0 GB"):
+        time.sleep(1.3)
+    assert s.job["steps"][0]["detail"].startswith("Working · 1.0 GB · 00:0")
+
+
+def test_new_phone_clears_finished_job(tmp_path):
+    from galaxy_refurb.devices import DeviceStatus
+    from galaxy_refurb.gui import App
+    cfg = Config(app_home=tmp_path / "home", data_home=tmp_path / "data")
+    cfg.ensure_dirs()
+    app = App(cfg)
+    app.session.new_job([("x", "X")])
+    app.session.finish("pass", "ok")
+    app.on_device(DeviceStatus("none"))
+    assert app.session.job is not None          # result stays while unplugged
+    app.on_device(DeviceStatus("adb", model="SM-A156B", serial="X"))
+    assert app.session.job is None              # next phone starts fresh
+
+
+def test_page_structure():
+    """Guard: script code must live in <script>, not leak into <style> (happened once)."""
+    import re
+    html = (Path(__file__).parent.parent / "galaxy_refurb" / "web" / "index.html").read_text(encoding="utf-8")
+    style = re.search(r"<style>(.*?)</style>", html, re.S).group(1)
+    script = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    assert "function " not in style and "const " not in style
+    for fn in ("render", "renderSteps", "renderPrompt", "renderResult", "tickClock", "chime", "loadHistory"):
+        assert f"function {fn}(" in script, fn

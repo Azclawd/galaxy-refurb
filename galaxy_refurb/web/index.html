@@ -146,7 +146,7 @@ body.working .process{opacity:1}
 .check .cd{color:var(--muted)}
 
 /* ---------- prompt card ---------- */
-.prompt{position:fixed;right:36px;bottom:28px;width:min(560px,calc(100vw - 480px));max-height:calc(100vh - 120px);overflow:auto;
+.prompt{position:fixed;right:36px;bottom:28px;width:min(560px,max(360px,calc(100vw - 480px)));max-height:calc(100vh - 120px);overflow:auto;
   background:linear-gradient(180deg,#1a2648,#121b33);border:1px solid #3a4d85;border-radius:20px;padding:22px 22px 18px;
   box-shadow:0 30px 80px #000000a0,0 0 0 1px #ffffff08 inset;z-index:30;animation:cardIn .55s var(--ease-spring) both}
 @keyframes cardIn{from{opacity:0;transform:translateY(30px) scale(.97)}to{opacity:1;transform:none}}
@@ -215,6 +215,29 @@ td.notes{color:var(--muted);max-width:420px}
 .help{grid-column:1/-1;overflow:auto;padding:10px 36px 60px;max-width:860px;line-height:1.6}
 .help h3{margin-top:26px}.help code{background:#ffffff12;padding:2px 6px;border-radius:6px}
 
+/* overall progress */
+.progress{max-width:760px;height:6px;border-radius:99px;background:#ffffff10;overflow:hidden;margin:0 0 16px}
+.progress i{display:block;height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--cyan));transition:width .8s var(--ease-out)}
+.result.pass ~ .x, body.done-pass .progress i{background:var(--green)}
+.step .dur{position:absolute;right:16px;top:16px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+body.has-prompt .process{padding-bottom:440px}
+.subtle{background:none;color:var(--muted);font-size:13.5px;padding:6px 10px;border-radius:9px;opacity:0;pointer-events:none;transition:opacity .5s ease .7s}
+.stage.ready .subtle{opacity:1;pointer-events:auto}
+.subtle:hover{color:var(--text);background:#ffffff0d}
+.stage-btn{display:none;padding:12px 26px;border-radius:999px;font-weight:650;background:var(--amber);color:#2a1a00}
+.stage.driver .stage-btn{display:inline-block}
+.mute{background:none;color:var(--muted);padding:7px 10px;border-radius:9px;font-size:13px}
+.mute:hover{color:var(--text);background:#ffffff0d}
+:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.copied{color:var(--green);font-size:13px;margin-left:8px}
+@media (max-width:980px){
+  body.working .main{grid-template-columns:1fr}
+  body.working .stage{display:none}
+  .process{padding:8px 18px 120px}
+  .prompt{left:16px;right:16px;width:auto;bottom:16px}
+  .activity{display:none}
+}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -227,6 +250,7 @@ td.notes{color:var(--muted);max-width:420px}
     <button class="tab" data-view="help">Help</button>
   </div>
   <div class="spacer"></div>
+  <button class="mute" id="muteBtn" title="Sound alerts when the app needs you">🔔 Sound on</button>
   <button class="stopbtn" id="stopBtn">Stop this phone</button>
   <button class="toplink" data-open="firmware">Firmware folder</button>
   <button class="toplink" data-open="logs">Logs</button>
@@ -247,10 +271,13 @@ td.notes{color:var(--muted);max-width:420px}
       </div>
       <div class="devtext"><h1 id="devLabel">Plug in a phone</h1><p id="devHint">Use a USB data cable and unlock the phone.</p></div>
       <button class="start" id="startBtn">Start</button>
+      <button class="stage-btn" data-url="https://developer.samsung.com/android-usb-driver">Get the Samsung USB driver ↗</button>
+      <button class="subtle" id="verifyBtn" title="For a phone that's already been flashed and set up, with USB debugging on">Already flashed? Run final checks only</button>
       <div class="tools-warn" id="toolsWarn"></div>
     </section>
     <section class="process" id="process">
       <div class="ph"><h2 id="procTitle">Refurbishing</h2><span class="meta" id="procMeta"></span></div>
+      <div class="progress" aria-hidden="true"><i id="bar"></i></div>
       <div class="chips" id="chips"></div>
       <ul class="steps" id="steps"></ul>
       <div id="result"></div>
@@ -273,12 +300,35 @@ td.notes{color:var(--muted);max-width:420px}
 
 <details class="activity" id="activity"><summary>Activity log</summary><pre id="logpre"></pre></details>
 <div id="promptHost"></div>
+<div class="sr" aria-live="polite" id="announce"></div>
 
 <script>
 const $ = s => document.querySelector(s);
 let V = -1, S = null, promptId = null, stepEls = {}, jobKey = null, resultShown = null, view = "refurb";
 const ICON = {pending:"", running:"", done:"✓", warn:"!", failed:"✕", blocked:"✕", skipped:"–"};
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let muted = false;
+try { muted = localStorage.getItem("gr-muted") === "1"; } catch(e) {}
+let actx = null;
+function chime(kind){
+  if(muted) return;
+  try{
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if(!kind) return;   // just unlocks audio on the Start click
+    const notes = {attn:[660,880], pass:[523,659,784], fail:[440,330]}[kind] || [660];
+    notes.forEach((f,i)=>{
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = "sine"; o.frequency.value = f;
+      const t = actx.currentTime + i*0.16;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.18, t+0.02); g.gain.exponentialRampToValueAtTime(0.0001, t+0.35);
+      o.connect(g).connect(actx.destination); o.start(t); o.stop(t+0.4);
+    });
+  }catch(e){}
+}
+function setMute(m){ muted = m; try{ localStorage.setItem("gr-muted", m?"1":"0"); }catch(e){}
+  $("#muteBtn").textContent = m ? "🔕 Sound off" : "🔔 Sound on"; }
+const fmtDur = s => s==null ? "" : (s < 60 ? `${s}s` : `${Math.floor(s/60)}m ${String(s%60).padStart(2,"0")}s`);
+function announce(t){ $("#announce").textContent = t; }
 const post = (u, b) => fetch(u, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(b||{})}).then(r=>r.json()).catch(()=>({}));
 
 async function loop(){
@@ -293,6 +343,15 @@ async function loop(){
 function render(s){
   const job = s.job, dev = s.device || {};
   document.body.classList.toggle("working", !!job);
+  document.body.classList.toggle("has-prompt", !!s.prompt);
+  document.body.classList.toggle("done-pass", !!(job && job.result && job.result.status==="pass"));
+  document.title = s.prompt ? "● Your turn - Galaxy Refurb" : (job && job.running ? "Working… - Galaxy Refurb" : "Galaxy Refurb");
+  if(job){
+    const n = job.steps.length, d = job.steps.filter(x=>["done","warn"].includes(x.status)).length;
+    $("#bar").style.width = (job.result && job.result.status==="pass" ? 100 : Math.round(d*100/n)) + "%";
+  }
+  $("#verifyBtn").disabled = dev.state !== "adb";
+  $("#verifyBtn").style.visibility = dev.state === "adb" ? "visible" : "hidden";
   renderStage(dev, job, s);
   renderSteps(job);
   renderPrompt(s.prompt);
@@ -313,6 +372,7 @@ function renderStage(dev, job, s){
   st.classList.toggle("connected", connected);
   const ready = !job && ["adb","download","unauthorized","samsung_no_debug"].includes(dev.state);
   st.classList.toggle("ready", ready);
+  st.classList.toggle("driver", !job && dev.state==="no_driver");
   const res = job && job.result;
   const attn = (!job && ["unauthorized","samsung_no_debug","no_driver"].includes(dev.state)) || (job && s.prompt && !res);
   st.classList.toggle("attn", !!attn);
@@ -350,12 +410,15 @@ function renderSteps(job){
   job.steps.forEach(st=>{
     const e = stepEls[st.key]; if(!e) return;
     if(e.status !== st.status){
+      if(e.status !== "pending" || st.status !== "running") announce(`${st.title}: ${st.status}`);
       e.li.className = "step " + st.status; e.li.style.animationDelay = "0s";
       e.li.querySelector(".ic").innerHTML = `<span>${ICON[st.status] || e.n}</span>`;
       e.status = st.status;
       if(st.status==="running") e.li.scrollIntoView({behavior:"smooth", block:"nearest"});
     }
     e.li.querySelector(".d").textContent = st.detail || "";
+    let du = e.li.querySelector(".dur");
+    if(st.dur != null){ if(!du){ du = document.createElement("span"); du.className="dur"; e.li.appendChild(du);} du.textContent = fmtDur(st.dur); }
     const cul = e.li.querySelector(".checks");
     for(let k=e.checks; k<st.checks.length; k++){
       const c = st.checks[k]; const li = document.createElement("li");
@@ -370,8 +433,9 @@ function renderSteps(job){
     .forEach(([k,v])=>{ if(v) chips.push(`<span class="chip">${k}<b>${esc(v)}</b></span>`); });
   const html = chips.join("");
   if($("#chips").dataset.h !== html){ $("#chips").innerHTML = html; $("#chips").dataset.h = html; }
-  $("#procTitle").textContent = p.model ? `Refurbishing ${p.model}` : "Refurbishing";
-  $("#procMeta").textContent = job.running ? `started ${new Date(job.started*1000).toLocaleTimeString()}` : "";
+  const verb = job.mode==="verify" ? "Final checks" : "Refurbishing";
+  $("#procTitle").textContent = p.model ? `${verb} · ${p.model}` : verb;
+  tickClock();
 }
 
 function diagHTML(d, cls){
@@ -381,6 +445,7 @@ function diagHTML(d, cls){
     <div class="lbl">Why</div><div>${esc(d.cause)}</div>
     <div class="lbl">What to do</div><ul>${(d.fix||[]).map(f=>`<li>${esc(f)}</li>`).join("")}</ul>
     ${d.log && d.log.length ? `<details class="logs"><summary>Log lines (${d.log.length})</summary><pre class="loglines">${esc(d.log.join("\n"))}</pre></details>`:""}
+    <div class="btns" style="margin-top:10px"><button class="b ghost" data-copy="1">Copy details</button><span class="copied" hidden>Copied ✓</span></div>
   </div>`;
 }
 
@@ -389,6 +454,7 @@ function renderPrompt(p){
   if(!p){ if(promptId!==null){ host.innerHTML=""; promptId=null; } return; }
   if(p.id === promptId) return;
   promptId = p.id;
+  chime(p.diagnosis ? "fail" : "attn");
   const btns = (p.options||[]).map(o=>`<button class="b ${o.style||""}" data-v="${esc(o.value)}">${esc(o.label)}</button>`).join("");
   const kick = p.diagnosis ? (p.diagnosis.severity==="return" ? "Can't continue" : "Problem found") : "Your turn";
   host.innerHTML = `<div class="prompt">
@@ -404,11 +470,22 @@ function renderPrompt(p){
   </div>`;
   const inp = $("#pin");
   if(inp){ inp.focus(); inp.addEventListener("keydown", e=>{ if(e.key==="Enter") submit(inp.value); }); }
+  else { const first = host.querySelector(".b.primary[data-v], .b.good[data-v], .b[data-v]"); first && first.focus({preventScroll:true}); }
   host.querySelectorAll("[data-v]").forEach(b=>b.onclick=()=>submit(b.dataset.v));
   host.querySelectorAll("[data-submit]").forEach(b=>b.onclick=()=>submit(inp.value));
   function submit(v){ host.querySelectorAll("button").forEach(b=>b.disabled=true); post("/api/answer",{id:p.id, value:v}); }
 }
 
+function diagText(d){
+  const p = (S && S.job && S.job.phone) || {};
+  return [`Galaxy Refurb ${S && S.app.version}`, `Phone: ${p.model||"?"}  serial ${p.serial||"?"}  region ${p.region||"?"}  firmware ${p.firmware||"?"}`,
+    `Problem: ${d.title} [${d.code}]`, `Why: ${d.cause}`, "What to do:", ...(d.fix||[]).map(f=>" - "+f),
+    "Log lines:", ...(d.log||[])].join("\n");
+}
+function findDiag(el){
+  if(el.closest("#promptHost")) return S && S.prompt && S.prompt.diagnosis;
+  return S && S.job && S.job.result && S.job.result.diagnosis;
+}
 function renderResult(job){
   const host = $("#result");
   const res = job && job.result;
@@ -417,14 +494,25 @@ function renderResult(job){
   resultShown = key;
   if(!res){ host.innerHTML=""; return; }
   const icon = {pass:"✓", fail:"✕", return:"↩", stopped:"■"}[res.status] || "!";
+  chime(res.status==="pass" ? "pass" : (res.status==="stopped" ? "" : "fail"));
+  const took = job.ended ? fmtDur(Math.round(job.ended - job.started)) : "";
   host.innerHTML = `<div class="result ${res.status}">
-    <div class="head"><div class="badge">${icon}</div><div><h3>${esc(res.title)}</h3><div class="sub">${esc(res.detail||"")}</div></div></div>
+    <div class="head"><div class="badge">${icon}</div><div><h3>${esc(res.title)}</h3><div class="sub">${esc([res.detail, took && "took " + took].filter(Boolean).join(" · "))}</div></div></div>
     ${diagHTML(res.diagnosis)}
     <div class="btns"><button class="b primary" id="nextBtn">Next phone</button><button class="b ghost" data-open="logs">Open logs</button></div>
+    <div class="sub" style="margin-top:10px">Tip: just unplug this phone and plug in the next - it starts fresh automatically.</div>
   </div>`;
   $("#nextBtn").onclick = ()=>post("/api/next");
   setTimeout(()=>host.scrollIntoView({behavior:"smooth", block:"end"}), 300);
 }
+
+function tickClock(){
+  const job = S && S.job; const el = $("#procMeta");
+  if(!job){ el.textContent = ""; return; }
+  const end = job.ended || Date.now()/1000;
+  el.textContent = (job.running ? "running " : "total ") + fmtDur(Math.max(0, Math.round(end - job.started)));
+}
+setInterval(tickClock, 1000);
 
 /* ---------- history ---------- */
 const RES = r => {
@@ -464,7 +552,18 @@ document.addEventListener("click", e=>{
     if(view==="history") loadHistory();
   }
 });
-$("#startBtn").onclick = ()=>post("/api/start");
+$("#startBtn").onclick = ()=>{ chime(""); post("/api/start", {mode:"full"}); };
+$("#verifyBtn").onclick = ()=>post("/api/start", {mode:"verify"});
+$("#muteBtn").onclick = ()=>setMute(!muted);
+setMute(muted);
+document.addEventListener("click", e=>{
+  const c = e.target.closest("[data-copy]"); if(!c) return;
+  const d = findDiag(c); if(!d) return;
+  const done = ()=>{ const s = c.nextElementSibling; if(s){ s.hidden = false; setTimeout(()=>s.hidden = true, 2000); } };
+  (navigator.clipboard ? navigator.clipboard.writeText(diagText(d)) : Promise.reject()).then(done).catch(()=>{
+    const ta = document.createElement("textarea"); ta.value = diagText(d); document.body.appendChild(ta); ta.select();
+    try{ document.execCommand("copy"); done(); }catch(err){} ta.remove(); });
+});
 $("#stopBtn").onclick = ()=>{ if(confirm("Stop working on this phone?")) post("/api/cancel"); };
 loop();
 </script>

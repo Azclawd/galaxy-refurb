@@ -39,21 +39,32 @@ class App:
                 self.adb.run("start-server", timeout=30)
             except AdbError as exc:
                 self.session.add_log(f"adb could not start: {exc}", "error")
-        self.watcher = DeviceWatcher(cfg, self.adb, lambda st: self.session.set_device(st.to_dict()))
+        self.watcher = DeviceWatcher(cfg, self.adb, self.on_device)
+        self._last_state = "none"
         self.job_thread: threading.Thread | None = None
         self.tools = {"adb": bool(cfg.adb), "samloader": bool(cfg.samloader), "odin": bool(cfg.odin)}
+
+    def on_device(self, st) -> None:
+        """Device changed while idle. Plugging in a new phone after a finished one starts fresh."""
+        connected = st.state not in ("none",)
+        job = self.session.job
+        if connected and self._last_state == "none" and job and not job.get("running"):
+            self.session.clear_job()
+        self._last_state = st.state
+        self.session.set_device(st.to_dict())
 
     def busy(self) -> bool:
         return bool(self.job_thread and self.job_thread.is_alive())
 
-    def start_job(self) -> bool:
+    def start_job(self, mode: str = "full") -> bool:
         if self.busy():
             return False
+        mode = mode if mode in ("full", "verify") else "full"
         self.watcher.pause()
 
         def target():
             try:
-                Workflow(self.cfg, self.session, self.adb).run()
+                Workflow(self.cfg, self.session, self.adb, mode=mode).run()
             finally:
                 self.watcher.resume()
 
@@ -138,7 +149,7 @@ def make_handler(app: App):
                 return
             body = self._body()
             if self.path == "/api/start":
-                self._json({"ok": app.start_job()})
+                self._json({"ok": app.start_job(str(body.get("mode", "full")))})
             elif self.path == "/api/answer":
                 self._json({"ok": app.session.answer(int(body.get("id", 0)), body.get("value"))})
             elif self.path == "/api/cancel":
